@@ -56,6 +56,13 @@ class IMULiveReader:
         self.quaternion = np.array([1.0, 0.0, 0.0, 0.0])  # w, x, y, z
         self.sample_period = 0.1  # Will be updated with actual sample rate
         
+        # Magnetometer calibration
+        self.mag_calibration_mode = False
+        self.mag_calibrated = False
+        self.mag_cal_samples = []
+        self.mag_offset = np.array([0.0, 0.0, 0.0])  # Hard-iron offset
+        self.mag_scale = np.array([1.0, 1.0, 1.0])  # Soft-iron scale
+        
         self.serial_conn = None
         self.running = False
         self.data_count = 0
@@ -216,6 +223,48 @@ class IMULiveReader:
         self.quaternion = np.array([1.0, 0.0, 0.0, 0.0])  # Reset to identity
         print("\n[RESET] Orientation reset to identity quaternion")
     
+    def start_mag_calibration(self):
+        """Start magnetometer calibration data collection"""
+        self.mag_calibration_mode = True
+        self.mag_cal_samples = []
+        print("\n[MAG CAL] Started magnetometer calibration")
+        print("[MAG CAL] Rotate sensor slowly in ALL directions (like drawing a figure-8)")
+        print("[MAG CAL] Continue for 20-30 seconds...")
+    
+    def finish_mag_calibration(self):
+        """Calculate magnetometer calibration from collected samples"""
+        self.mag_calibration_mode = False
+        
+        if len(self.mag_cal_samples) < 50:
+            print(f"\n[MAG CAL] ERROR: Not enough samples ({len(self.mag_cal_samples)}). Need at least 50.")
+            self.mag_calibrated = False
+            return False
+        
+        # Convert to numpy array
+        samples = np.array(self.mag_cal_samples)
+        
+        # Calculate hard-iron offset (center of sphere)
+        mag_max = np.max(samples, axis=0)
+        mag_min = np.min(samples, axis=0)
+        self.mag_offset = (mag_max + mag_min) / 2.0
+        
+        # Calculate soft-iron scale (normalize to sphere)
+        mag_range = mag_max - mag_min
+        avg_range = np.mean(mag_range)
+        self.mag_scale = avg_range / mag_range
+        
+        print(f"\n[MAG CAL] Calibration complete with {len(self.mag_cal_samples)} samples")
+        print(f"[MAG CAL] Offset (hard-iron): X={self.mag_offset[0]:.2f}, Y={self.mag_offset[1]:.2f}, Z={self.mag_offset[2]:.2f}")
+        print(f"[MAG CAL] Scale (soft-iron): X={self.mag_scale[0]:.3f}, Y={self.mag_scale[1]:.3f}, Z={self.mag_scale[2]:.3f}")
+        print(f"[MAG CAL] Raw range: X={mag_range[0]:.2f}, Y={mag_range[1]:.2f}, Z={mag_range[2]:.2f}")
+        
+        # Mark as calibrated
+        self.mag_calibrated = True
+        
+        # Reset orientation after calibration
+        self.reset_orientation()
+        return True
+    
     def update_orientation(self, data):
         """Update orientation using Madgwick filter and compute global acceleration"""
         try:
@@ -233,6 +282,13 @@ class IMULiveReader:
             
             # Magnetometer: µT (already in correct units)
             mag = np.array([data['mX'], data['mY'], data['mZ']])
+            
+            # Store raw magnetometer samples during calibration
+            if self.mag_calibration_mode:
+                self.mag_cal_samples.append(mag.copy())
+            
+            # Apply magnetometer calibration
+            mag = (mag - self.mag_offset) * self.mag_scale
             
             # Normalize accelerometer and magnetometer
             acc_norm = acc / np.linalg.norm(acc) if np.linalg.norm(acc) > 0 else acc
@@ -335,6 +391,35 @@ class IMULiveReader:
                     'borderRadius': '5px',
                     'cursor': 'pointer'
                 }),
+                html.Button('🧭 Start Mag Kalibrering', id='mag-cal-start-button', n_clicks=0, style={
+                    'fontSize': '18px',
+                    'padding': '10px 30px',
+                    'margin': '10px',
+                    'backgroundColor': '#2196F3',
+                    'color': 'white',
+                    'border': 'none',
+                    'borderRadius': '5px',
+                    'cursor': 'pointer'
+                }),
+                html.Button('✅ Fullfør Mag Kalibrering', id='mag-cal-finish-button', n_clicks=0, style={
+                    'fontSize': '18px',
+                    'padding': '10px 30px',
+                    'margin': '10px',
+                    'backgroundColor': '#9C27B0',
+                    'color': 'white',
+                    'border': 'none',
+                    'borderRadius': '5px',
+                    'cursor': 'pointer'
+                }),
+                html.Div(id='mag-cal-status', style={
+                    'fontSize': '16px',
+                    'padding': '10px',
+                    'margin': '10px',
+                    'backgroundColor': '#f0f0f0',
+                    'borderRadius': '5px',
+                    'minWidth': '300px',
+                    'textAlign': 'center'
+                }, children='Magnetometer: Ikke kalibrert'),
                 html.Div([
                     html.Label('Vis sensorer:', style={'fontWeight': 'bold', 'marginRight': '10px'}),
                     dcc.Checklist(
@@ -388,6 +473,46 @@ class IMULiveReader:
             return ''
         
         @app.callback(
+            Output('mag-cal-status', 'children'),
+            [Input('mag-cal-start-button', 'n_clicks'),
+             Input('mag-cal-finish-button', 'n_clicks'),
+             Input('interval-component', 'n_intervals')],
+            prevent_initial_call=True
+        )
+        def mag_cal_callback(start_clicks, finish_clicks, n):
+            from dash import callback_context
+            
+            if not callback_context.triggered:
+                return 'Magnetometer: Ikke kalibrert'
+            
+            # Find which input triggered the callback
+            button_id = callback_context.triggered[0]['prop_id'].split('.')[0]
+            
+            # If interval triggered and we're in calibration mode, show sample count
+            if button_id == 'interval-component' and self.mag_calibration_mode:
+                return f'🔄 KALIBRERING PÅGÅR - {len(self.mag_cal_samples)} samples samlet (trenger 50+)'
+            
+            # Handle button clicks
+            if button_id == 'mag-cal-start-button' and start_clicks > 0:
+                self.start_mag_calibration()
+                return '🔄 KALIBRERING PÅGÅR - 0 samples samlet (trenger 50+)'
+            
+            elif button_id == 'mag-cal-finish-button' and finish_clicks > 0:
+                result = self.finish_mag_calibration()
+                if result:
+                    return f'✅ KALIBRERT - Offset: [{self.mag_offset[0]:.1f}, {self.mag_offset[1]:.1f}, {self.mag_offset[2]:.1f}] µT, Scale: [{self.mag_scale[0]:.2f}, {self.mag_scale[1]:.2f}, {self.mag_scale[2]:.2f}]'
+                else:
+                    return f'❌ FEIL - For få samples ({len(self.mag_cal_samples)}). Trenger minst 50. Start på nytt!'
+            
+            # Default status
+            if self.mag_calibration_mode:
+                return f'🔄 KALIBRERING PÅGÅR - {len(self.mag_cal_samples)} samples samlet (trenger 50+)'
+            elif self.mag_calibrated:
+                return f'✅ KALIBRERT - Offset: [{self.mag_offset[0]:.1f}, {self.mag_offset[1]:.1f}, {self.mag_offset[2]:.1f}] µT, Scale: [{self.mag_scale[0]:.2f}, {self.mag_scale[1]:.2f}, {self.mag_scale[2]:.2f}]'
+            else:
+                return 'Magnetometer: Ikke kalibrert'
+        
+        @app.callback(
             [Output('local-graph', 'figure'),
              Output('global-graph', 'figure'),
              Output('info-text', 'children')],
@@ -400,6 +525,7 @@ class IMULiveReader:
             if paused:
                 from dash.exceptions import PreventUpdate
                 raise PreventUpdate
+            
             if len(self.ax_buffer) == 0:
                 # Return empty figures if no data yet
                 empty_fig = go.Figure()
