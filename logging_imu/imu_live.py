@@ -436,6 +436,55 @@ class IMULiveReader:
                 ], style={'display': 'inline-block', 'marginLeft': '20px'})
             ], style={'textAlign': 'center'}),
             html.Div([
+                html.H3("Magnetometer Kalibrering - Manuelle Verdier", style={'textAlign': 'center', 'marginTop': '20px'}),
+                html.Div([
+                    html.Div([
+                        html.Label('Offset (µT):', style={'fontWeight': 'bold'}),
+                        html.Div([
+                            html.Label('X:', style={'marginRight': '5px'}),
+                            dcc.Input(id='mag-offset-x', type='number', value=0, step=0.1, style={'width': '80px', 'marginRight': '15px'}),
+                            html.Label('Y:', style={'marginRight': '5px'}),
+                            dcc.Input(id='mag-offset-y', type='number', value=0, step=0.1, style={'width': '80px', 'marginRight': '15px'}),
+                            html.Label('Z:', style={'marginRight': '5px'}),
+                            dcc.Input(id='mag-offset-z', type='number', value=0, step=0.1, style={'width': '80px'}),
+                        ])
+                    ], style={'display': 'inline-block', 'marginRight': '40px'}),
+                    html.Div([
+                        html.Label('Scale:', style={'fontWeight': 'bold'}),
+                        html.Div([
+                            html.Label('X:', style={'marginRight': '5px'}),
+                            dcc.Input(id='mag-scale-x', type='number', value=1.0, step=0.01, style={'width': '80px', 'marginRight': '15px'}),
+                            html.Label('Y:', style={'marginRight': '5px'}),
+                            dcc.Input(id='mag-scale-y', type='number', value=1.0, step=0.01, style={'width': '80px', 'marginRight': '15px'}),
+                            html.Label('Z:', style={'marginRight': '5px'}),
+                            dcc.Input(id='mag-scale-z', type='number', value=1.0, step=0.01, style={'width': '80px'}),
+                        ])
+                    ], style={'display': 'inline-block'}),
+                    html.Div([
+                        html.Button('🔄 Oppdater Verdier', id='mag-update-button', n_clicks=0, style={
+                            'fontSize': '16px',
+                            'padding': '10px 20px',
+                            'marginLeft': '20px',
+                            'backgroundColor': '#4CAF50',
+                            'color': 'white',
+                            'border': 'none',
+                            'borderRadius': '5px',
+                            'cursor': 'pointer'
+                        }),
+                        html.Button('↺ Reset til Standard', id='mag-reset-button', n_clicks=0, style={
+                            'fontSize': '16px',
+                            'padding': '10px 20px',
+                            'marginLeft': '10px',
+                            'backgroundColor': '#FF5722',
+                            'color': 'white',
+                            'border': 'none',
+                            'borderRadius': '5px',
+                            'cursor': 'pointer'
+                        })
+                    ], style={'display': 'inline-block', 'verticalAlign': 'top', 'marginLeft': '20px'})
+                ], style={'textAlign': 'center', 'padding': '10px'})
+            ], style={'backgroundColor': '#f9f9f9', 'borderRadius': '10px', 'padding': '10px', 'margin': '10px auto', 'maxWidth': '900px'}),
+            html.Div([
                 html.Div([
                     html.H3("Lokal (IMU-referanse)", style={'textAlign': 'center'}),
                     dcc.Graph(id='local-graph', style={'height': '70vh'})
@@ -473,44 +522,110 @@ class IMULiveReader:
             return ''
         
         @app.callback(
-            Output('mag-cal-status', 'children'),
+            [Output('mag-cal-status', 'children'),
+             Output('mag-offset-x', 'value'),
+             Output('mag-offset-y', 'value'),
+             Output('mag-offset-z', 'value'),
+             Output('mag-scale-x', 'value'),
+             Output('mag-scale-y', 'value'),
+             Output('mag-scale-z', 'value')],
             [Input('mag-cal-start-button', 'n_clicks'),
              Input('mag-cal-finish-button', 'n_clicks'),
              Input('interval-component', 'n_intervals')],
+            [State('paused-state', 'data')],
             prevent_initial_call=True
         )
-        def mag_cal_callback(start_clicks, finish_clicks, n):
-            from dash import callback_context
+        def mag_cal_callback(start_clicks, finish_clicks, n, paused):
+            from dash import callback_context, no_update
             
             if not callback_context.triggered:
-                return 'Magnetometer: Ikke kalibrert'
+                return 'Magnetometer: Ikke kalibrert', 0, 0, 0, 1.0, 1.0, 1.0
             
             # Find which input triggered the callback
             button_id = callback_context.triggered[0]['prop_id'].split('.')[0]
             
+            # If paused and interval triggered, don't update anything
+            if paused and button_id == 'interval-component':
+                return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+            
             # If interval triggered and we're in calibration mode, show sample count
             if button_id == 'interval-component' and self.mag_calibration_mode:
-                return f'🔄 KALIBRERING PÅGÅR - {len(self.mag_cal_samples)} samples samlet (trenger 50+)'
+                return (f'🔄 KALIBRERING PÅGÅR - {len(self.mag_cal_samples)} samples samlet (trenger 50+)',
+                        self.mag_offset[0], self.mag_offset[1], self.mag_offset[2],
+                        self.mag_scale[0], self.mag_scale[1], self.mag_scale[2])
             
             # Handle button clicks
             if button_id == 'mag-cal-start-button' and start_clicks > 0:
                 self.start_mag_calibration()
-                return '🔄 KALIBRERING PÅGÅR - 0 samples samlet (trenger 50+)'
+                return ('🔄 KALIBRERING PÅGÅR - 0 samples samlet (trenger 50+)',
+                        self.mag_offset[0], self.mag_offset[1], self.mag_offset[2],
+                        self.mag_scale[0], self.mag_scale[1], self.mag_scale[2])
             
             elif button_id == 'mag-cal-finish-button' and finish_clicks > 0:
                 result = self.finish_mag_calibration()
                 if result:
-                    return f'✅ KALIBRERT - Offset: [{self.mag_offset[0]:.1f}, {self.mag_offset[1]:.1f}, {self.mag_offset[2]:.1f}] µT, Scale: [{self.mag_scale[0]:.2f}, {self.mag_scale[1]:.2f}, {self.mag_scale[2]:.2f}]'
+                    return (f'✅ KALIBRERT - Offset: [{self.mag_offset[0]:.1f}, {self.mag_offset[1]:.1f}, {self.mag_offset[2]:.1f}] µT, Scale: [{self.mag_scale[0]:.2f}, {self.mag_scale[1]:.2f}, {self.mag_scale[2]:.2f}]',
+                            self.mag_offset[0], self.mag_offset[1], self.mag_offset[2],
+                            self.mag_scale[0], self.mag_scale[1], self.mag_scale[2])
                 else:
-                    return f'❌ FEIL - For få samples ({len(self.mag_cal_samples)}). Trenger minst 50. Start på nytt!'
+                    return (f'❌ FEIL - For få samples ({len(self.mag_cal_samples)}). Trenger minst 50. Start på nytt!',
+                            self.mag_offset[0], self.mag_offset[1], self.mag_offset[2],
+                            self.mag_scale[0], self.mag_scale[1], self.mag_scale[2])
             
             # Default status
             if self.mag_calibration_mode:
-                return f'🔄 KALIBRERING PÅGÅR - {len(self.mag_cal_samples)} samples samlet (trenger 50+)'
+                return (f'🔄 KALIBRERING PÅGÅR - {len(self.mag_cal_samples)} samples samlet (trenger 50+)',
+                        self.mag_offset[0], self.mag_offset[1], self.mag_offset[2],
+                        self.mag_scale[0], self.mag_scale[1], self.mag_scale[2])
             elif self.mag_calibrated:
-                return f'✅ KALIBRERT - Offset: [{self.mag_offset[0]:.1f}, {self.mag_offset[1]:.1f}, {self.mag_offset[2]:.1f}] µT, Scale: [{self.mag_scale[0]:.2f}, {self.mag_scale[1]:.2f}, {self.mag_scale[2]:.2f}]'
+                return (f'✅ KALIBRERT - Offset: [{self.mag_offset[0]:.1f}, {self.mag_offset[1]:.1f}, {self.mag_offset[2]:.1f}] µT, Scale: [{self.mag_scale[0]:.2f}, {self.mag_scale[1]:.2f}, {self.mag_scale[2]:.2f}]',
+                        self.mag_offset[0], self.mag_offset[1], self.mag_offset[2],
+                        self.mag_scale[0], self.mag_scale[1], self.mag_scale[2])
             else:
-                return 'Magnetometer: Ikke kalibrert'
+                return ('Magnetometer: Ikke kalibrert',
+                        self.mag_offset[0], self.mag_offset[1], self.mag_offset[2],
+                        self.mag_scale[0], self.mag_scale[1], self.mag_scale[2])
+        
+        @app.callback(
+            Output('mag-update-button', 'children'),
+            [Input('mag-update-button', 'n_clicks')],
+            [State('mag-offset-x', 'value'),
+             State('mag-offset-y', 'value'),
+             State('mag-offset-z', 'value'),
+             State('mag-scale-x', 'value'),
+             State('mag-scale-y', 'value'),
+             State('mag-scale-z', 'value')],
+            prevent_initial_call=True
+        )
+        def update_mag_values(n_clicks, offset_x, offset_y, offset_z, scale_x, scale_y, scale_z):
+            if n_clicks > 0:
+                self.mag_offset = np.array([offset_x or 0, offset_y or 0, offset_z or 0])
+                self.mag_scale = np.array([scale_x or 1.0, scale_y or 1.0, scale_z or 1.0])
+                self.mag_calibrated = True
+                print(f"\n[MANUAL UPDATE] Magnetometer verdier oppdatert:")
+                print(f"[MANUAL UPDATE] Offset: X={self.mag_offset[0]:.2f}, Y={self.mag_offset[1]:.2f}, Z={self.mag_offset[2]:.2f}")
+                print(f"[MANUAL UPDATE] Scale: X={self.mag_scale[0]:.3f}, Y={self.mag_scale[1]:.3f}, Z={self.mag_scale[2]:.3f}")
+                return '✅ Oppdatert!'
+            return '🔄 Oppdater Verdier'
+        
+        @app.callback(
+            [Output('mag-offset-x', 'value', allow_duplicate=True),
+             Output('mag-offset-y', 'value', allow_duplicate=True),
+             Output('mag-offset-z', 'value', allow_duplicate=True),
+             Output('mag-scale-x', 'value', allow_duplicate=True),
+             Output('mag-scale-y', 'value', allow_duplicate=True),
+             Output('mag-scale-z', 'value', allow_duplicate=True)],
+            [Input('mag-reset-button', 'n_clicks')],
+            prevent_initial_call=True
+        )
+        def reset_mag_values(n_clicks):
+            if n_clicks > 0:
+                self.mag_offset = np.array([0.0, 0.0, 0.0])
+                self.mag_scale = np.array([1.0, 1.0, 1.0])
+                self.mag_calibrated = False
+                print("\n[RESET] Magnetometer verdier tilbakestilt til standard (offset=[0,0,0], scale=[1,1,1])")
+                return 0, 0, 0, 1.0, 1.0, 1.0
+            return 0, 0, 0, 1.0, 1.0, 1.0
         
         @app.callback(
             [Output('local-graph', 'figure'),
@@ -549,9 +664,17 @@ class IMULiveReader:
             gy_val = self.gy_buffer[-1] * g_scale
             gz_val = self.gz_buffer[-1] * g_scale
             
-            mx_val = self.mx_buffer[-1] * m_scale
-            my_val = self.my_buffer[-1] * m_scale
-            mz_val = self.mz_buffer[-1] * m_scale
+            # Apply magnetometer calibration to displayed values
+            mx_raw = self.mx_buffer[-1]
+            my_raw = self.my_buffer[-1]
+            mz_raw = self.mz_buffer[-1]
+            mx_cal = (mx_raw - self.mag_offset[0]) * self.mag_scale[0]
+            my_cal = (my_raw - self.mag_offset[1]) * self.mag_scale[1]
+            mz_cal = (mz_raw - self.mag_offset[2]) * self.mag_scale[2]
+            
+            mx_val = mx_cal * m_scale
+            my_val = my_cal * m_scale
+            mz_val = mz_cal * m_scale
             
             # Get latest GLOBAL data
             ax_global = self.ax_global_buffer[-1] * a_scale if len(self.ax_global_buffer) > 0 else 0
@@ -618,7 +741,7 @@ class IMULiveReader:
                     line=dict(color='green', width=8),
                     marker=dict(size=[0, 10], color='green'),
                     name='Magnetometer',
-                    hovertemplate=f'mX: {self.mx_buffer[-1]:.1f} µT<br>mY: {self.my_buffer[-1]:.1f} µT<br>mZ: {self.mz_buffer[-1]:.1f} µT'
+                    hovertemplate=f'mX: {mx_cal:.1f} µT (kal)<br>mY: {my_cal:.1f} µT (kal)<br>mZ: {mz_cal:.1f} µT (kal)'
                 ))
                 
                 # Add cone for magnetometer
@@ -737,13 +860,13 @@ class IMULiveReader:
                 
                 # Magnetometer
                 html.Div([
-                    html.Strong("Magnetometer (µT):"),
+                    html.Strong("Magnetometer (µT kal):"),
                     html.Br(),
-                    f"X: {self.mx_buffer[-1]:7.1f}",
+                    f"X: {mx_cal:7.1f}",
                     html.Br(),
-                    f"Y: {self.my_buffer[-1]:7.1f}",
+                    f"Y: {my_cal:7.1f}",
                     html.Br(),
-                    f"Z: {self.mz_buffer[-1]:7.1f}",
+                    f"Z: {mz_cal:7.1f}",
                 ], style={'padding': '10px', 'minWidth': '180px'}),
                 
                 # Orientering
@@ -778,7 +901,7 @@ class IMULiveReader:
             print(f"\rSamples: {self.data_count} | "
                   f"a:[{self.ax_buffer[-1]:.1f}, {self.ay_buffer[-1]:.1f}, {self.az_buffer[-1]:.1f}] | "
                   f"g:[{self.gx_buffer[-1]:.1f}, {self.gy_buffer[-1]:.1f}, {self.gz_buffer[-1]:.1f}] | "
-                  f"m:[{self.mx_buffer[-1]:.1f}, {self.my_buffer[-1]:.1f}, {self.mz_buffer[-1]:.1f}] | "
+                  f"m:[{mx_cal:.1f}, {my_cal:.1f}, {mz_cal:.1f}] | "
                   f"global:[{self.ax_global_buffer[-1]:.1f}, {self.ay_global_buffer[-1]:.1f}, {self.az_global_buffer[-1]:.1f}] | "
                   f"R:{roll:.1f}° P:{pitch:.1f}° Y:{yaw:.1f}°",
                   end='', flush=True)
@@ -788,7 +911,13 @@ class IMULiveReader:
         @app.callback(
             [Output('paused-state', 'data'),
              Output('pause-button', 'children'),
-             Output('pause-button', 'style')],
+             Output('pause-button', 'style'),
+             Output('mag-offset-x', 'disabled'),
+             Output('mag-offset-y', 'disabled'),
+             Output('mag-offset-z', 'disabled'),
+             Output('mag-scale-x', 'disabled'),
+             Output('mag-scale-y', 'disabled'),
+             Output('mag-scale-z', 'disabled')],
             Input('pause-button', 'n_clicks'),
             State('paused-state', 'data')
         )
@@ -803,11 +932,12 @@ class IMULiveReader:
                     'border': 'none',
                     'borderRadius': '5px',
                     'cursor': 'pointer'
-                }
+                }, True, True, True, True, True, True  # All inputs disabled when running
             
             new_paused = not paused
             
             if new_paused:
+                # Paused - enable inputs
                 return True, '▶ Resume', {
                     'fontSize': '18px',
                     'padding': '10px 30px',
@@ -817,8 +947,9 @@ class IMULiveReader:
                     'border': 'none',
                     'borderRadius': '5px',
                     'cursor': 'pointer'
-                }
+                }, False, False, False, False, False, False  # All inputs enabled when paused
             else:
+                # Running - disable inputs
                 return False, '⏸ Pause', {
                     'fontSize': '18px',
                     'padding': '10px 30px',
@@ -828,7 +959,7 @@ class IMULiveReader:
                     'border': 'none',
                     'borderRadius': '5px',
                     'cursor': 'pointer'
-                }
+                }, True, True, True, True, True, True  # All inputs disabled when running
         
         print("\nLive 3D plotting started.")
         print(f"Reading from {self.port}...")
