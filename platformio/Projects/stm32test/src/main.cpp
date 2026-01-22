@@ -41,6 +41,8 @@ char currentLogFile[32] = "";
 double gpsLat = 0.0;
 double gpsLng = 0.0;
 double gpsAlt = 0.0;
+double gpsSpeed = 0.0;  // Raw doppler speed from GPS in m/s
+double gpsCourse = 0.0; // Raw course from GPS in degrees
 int gpsHour = 0;
 int gpsMinute = 0;
 int gpsSecond = 0;
@@ -137,7 +139,7 @@ void startLogging() {
     Serial.println(filename);
     
     // Write header
-    logFile.println("gps_time_ms,ax,ay,az,gx,gy,gz,t,lat,lng,alt");
+    logFile.println("gps_time_ms,ax,ay,az,gx,gy,gz,t,lat,lng,alt,speed_mps,course_deg");
     logFile.close();
   } else {
     Serial.println("Failed to create log file");
@@ -419,6 +421,12 @@ void loop() {
     if (gps.altitude.isValid()) {
       gpsAlt = gps.altitude.meters();
     }
+    if (gps.speed.isValid()) {
+      gpsSpeed = gps.speed.mps();  // Raw doppler speed from GPS
+    }
+    if (gps.course.isValid()) {
+      gpsCourse = gps.course.deg();  // Raw course from GPS
+    }
     if (gps.time.isValid()) {
       gpsHour = gps.time.hour();
       gpsMinute = gps.time.minute();
@@ -513,7 +521,11 @@ void loop() {
         logFile.print(",");
         logFile.print(gpsLng, 8);
         logFile.print(",");
-        logFile.println(gpsAlt, 2);
+        logFile.print(gpsAlt, 2);
+        logFile.print(",");
+        logFile.print(gpsSpeed, 3);
+        logFile.print(",");
+        logFile.println(gpsCourse, 2);
         logFile.close();
         logCounter++;
         
