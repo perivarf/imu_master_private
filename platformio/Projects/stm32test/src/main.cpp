@@ -8,8 +8,7 @@
 #include <time.h>
 #include <sys/time.h>
 
-// IMU interrupt pin
-#define IMU_INT_PIN PB4
+
 
 // GPS pins
 #define GPS_RX_PIN PC0
@@ -24,9 +23,12 @@
 
 #define SD_FAT_TYPE 1
 
-// IMU default data rates
+// IMU
 #define IMU_ACCELERATOR_DATA_RATE LSM6DS_RATE_104_HZ
 #define IMU_ACCELERATOR_GYRO_RATE LSM6DS_RATE_104_HZ
+#define IMU_ADDRESS 0x6A
+#define IMU_INT_PIN_GYRO PB4 // Interrupt pin from IMU, gyro data ready
+#define IMU_INT_PIN_ACCEL PB3 // Interrupt pin from IMU, accelerometer data ready
 
 
 // Live monitoring modes
@@ -40,7 +42,6 @@ enum LiveMode : uint8_t { LIVE_OFF = 0, LIVE_UNITS = 1, LIVE_CSV = 2 };
 #define LIVE_MONITORING_DEFAULT LIVE_CSV
 #define LIVE_UNITS_RATE_HZ 1
 #define LOG_FILE_PREFIX "dataLog"
-#define IMU_ADDRESS 0x6A
 #define GPS_TIME_SYNC_INTERVAL 3600000  // Resync every 1 hour
 #define GPS_TIME_MAX_DRIFT 2  // Max allowed drift in seconds before resync
 
@@ -59,7 +60,8 @@ bool sdFound = false;
 bool logging = false;
 LiveMode liveMode = LIVE_MONITORING_DEFAULT;
 bool gpsEnabled = !DEBUG_DISABLE_GPS;  // GPS enabled/disabled based on debug flag
-volatile bool dataReady = false;
+volatile bool gyroDataReady = false;
+volatile bool accelDataReady = false;
 unsigned long logCounter = 0;
 char currentLogFile[32] = "";
 
@@ -80,8 +82,12 @@ time_t gpsTimeAtSync = 0;  // GPS time_t value at sync
 unsigned long millisAtSync = 0;  // millis() at sync
 
 // Interrupt handler for IMU data ready
-void imuInterruptHandler() {
-  dataReady = true;
+void imuGyroInterruptHandler() {
+  gyroDataReady = true;
+}
+
+void imuAccelInterruptHandler() {
+  accelDataReady = true;
 }
 
 void showMenu() {
@@ -535,9 +541,12 @@ void printLiveMonitoring(uint8_t hours, uint8_t minutes, uint8_t seconds, uint16
 }
 
 void processIMUData(time_t now, uint16_t millis_val, uint8_t hours, uint8_t minutes, uint8_t seconds) {
-  if (!imuFound || !dataReady) return;
   
-  dataReady = false;
+  if (!imuFound) return;
+  if (!gyroDataReady || !accelDataReady) return;
+  
+  gyroDataReady = false;
+  accelDataReady = false;
   
   if (logging && gpsEnabled && !gpsTimeValid) {
     static unsigned long lastWaitMsg = 0;
@@ -642,15 +651,21 @@ void setup() {
     imu.setGyroRange(LSM6DS_GYRO_RANGE_250_DPS);
     imu.setAccelDataRate(IMU_ACCELERATOR_DATA_RATE);
     imu.setGyroDataRate(IMU_ACCELERATOR_GYRO_RATE);
-    
+
+
     // Configure interrupt pin
-    pinMode(IMU_INT_PIN, INPUT);
-    attachInterrupt(digitalPinToInterrupt(IMU_INT_PIN), imuInterruptHandler, RISING);
+    pinMode(IMU_INT_PIN_GYRO, INPUT);
+    pinMode(IMU_INT_PIN_ACCEL, INPUT);
+    attachInterrupt(digitalPinToInterrupt(IMU_INT_PIN_GYRO), imuGyroInterruptHandler, RISING);
+    attachInterrupt(digitalPinToInterrupt(IMU_INT_PIN_ACCEL), imuAccelInterruptHandler, RISING);
     
     // Enable data ready interrupt on INT1
-    imu.configInt1(false, false, true);  // INT1 for data ready
+    imu.configInt1(false, true, false); //Gyro on INT1
+    imu.configInt2(false, false, true); //Accel on INT2
     
-    Serial.println("IMU interrupt configured on PB4");
+
+    Serial.println("IMU gyro interrupt configured on PB4");
+    Serial.println("IMU accel interrupt configured on PB3");
   }
   
   // Show initial menu
