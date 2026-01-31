@@ -75,6 +75,9 @@ int gpsHour = 0;
 int gpsMinute = 0;
 int gpsSecond = 0;
 int gpsMillisecond = 0;
+unsigned long lastSystemTimeUpdate = 0;  // Track last system time update
+time_t gpsTimeAtSync = 0;  // GPS time_t value at sync
+unsigned long millisAtSync = 0;  // millis() at sync
 
 // Interrupt handler for IMU data ready
 void imuInterruptHandler() {
@@ -342,6 +345,221 @@ void downloadFile() {
   Serial.print("> ");
 }
 
+void updateGPSData() {
+  if (!gpsEnabled) return;
+  
+  while (gpsSerial.available() > 0) {
+    char c = gpsSerial.read();
+    gps.encode(c);
+  }
+  
+  if (gps.location.isValid()) {
+    gpsLat = gps.location.lat();
+    gpsLng = gps.location.lng();
+  }
+  if (gps.altitude.isValid()) {
+    gpsAlt = gps.altitude.meters();
+  }
+  if (gps.speed.isValid()) {
+    gpsSpeed = gps.speed.mps();
+  }
+  if (gps.course.isValid()) {
+    gpsCourse = gps.course.deg();
+  }
+  if (gps.time.isValid()) {
+    unsigned long now_ms = millis();
+    
+    if (!gpsTimeValid) {
+      struct tm timeinfo = {};
+      timeinfo.tm_year = gps.date.year() - 1900;
+      timeinfo.tm_mon = gps.date.month() - 1;
+      timeinfo.tm_mday = gps.date.day();
+      timeinfo.tm_hour = gps.time.hour();
+      timeinfo.tm_min = gps.time.minute();
+      timeinfo.tm_sec = gps.time.second();
+      gpsTimeAtSync = mktime(&timeinfo);
+      millisAtSync = now_ms;
+      
+      gpsTimeValid = true;
+      lastGpsTimeSync = now_ms;
+      lastSystemTimeUpdate = now_ms;
+      
+      Serial.println("GPS time acquired - system clock synchronized");
+    }
+    else if (now_ms - lastGpsTimeSync >= GPS_TIME_SYNC_INTERVAL) {
+      struct tm timeinfo = {};
+      timeinfo.tm_year = gps.date.year() - 1900;
+      timeinfo.tm_mon = gps.date.month() - 1;
+      timeinfo.tm_mday = gps.date.day();
+      timeinfo.tm_hour = gps.time.hour();
+      timeinfo.tm_min = gps.time.minute();
+      timeinfo.tm_sec = gps.time.second();
+      gpsTimeAtSync = mktime(&timeinfo);
+      millisAtSync = now_ms;
+      lastGpsTimeSync = now_ms;
+      lastSystemTimeUpdate = now_ms;
+    }
+  }
+}
+
+void calculateCurrentTime(time_t& now, uint16_t& millis_val, uint8_t& hours, uint8_t& minutes, uint8_t& seconds) {
+  if (gpsTimeValid) {
+    unsigned long elapsed_ms = millis() - millisAtSync;
+    now = gpsTimeAtSync + (elapsed_ms / 1000);
+    millis_val = elapsed_ms % 1000;
+  } else {
+    unsigned long uptime_ms = millis();
+    now = uptime_ms / 1000;
+    millis_val = uptime_ms % 1000;
+  }
+  
+  struct tm* timeinfo = localtime(&now);
+  if (!timeinfo) {
+    now = 0;
+    timeinfo = localtime(&now);
+  }
+  
+  hours = timeinfo->tm_hour;
+  minutes = timeinfo->tm_min;
+  seconds = timeinfo->tm_sec;
+}
+
+void handleSerialCommands() {
+  if (!Serial.available()) return;
+  
+  char cmd = Serial.read();
+  while (Serial.available() && (Serial.peek() == '\n' || Serial.peek() == '\r')) {
+    Serial.read();
+  }
+  
+  switch (cmd) {
+    case '?': showMenu(); break;
+    case '1': listFiles(); break;
+    case '2': logging ? stopLogging() : startLogging(); break;
+    case '3': toggleGPS(); break;
+    case '4': viewFile(); break;
+    case '5': deleteFile(); break;
+    case '6': showStatus(); break;
+    case '7': downloadFile(); break;
+    case '8': toggleLiveMonitoring(); break;
+    default: 
+      Serial.print("Unknown command: ");
+      Serial.println(cmd);
+      Serial.print("> ");
+      break;
+  }
+}
+
+void logToSD(time_t now, uint16_t millis_val, uint8_t hours, uint8_t minutes, uint8_t seconds, 
+             float ax, float ay, float az, float gx, float gy, float gz, float temp) {
+  if (!logging || !sdFound) return;
+  
+  logFile = SD.open(currentLogFile, FILE_WRITE);
+  if (logFile) {
+    char timeStr[20];
+    sprintf(timeStr, "%02d:%02d:%02d.%03d", hours, minutes, seconds, millis_val);
+    logFile.print(timeStr);
+    logFile.print(",");
+    logFile.print(ax, 6); logFile.print(",");
+    logFile.print(ay, 6); logFile.print(",");
+    logFile.print(az, 6); logFile.print(",");
+    logFile.print(gx, 6); logFile.print(",");
+    logFile.print(gy, 6); logFile.print(",");
+    logFile.print(gz, 6); logFile.print(",");
+    logFile.print(temp, 6); logFile.print(",");
+    logFile.print(gpsLat, 8); logFile.print(",");
+    logFile.print(gpsLng, 8); logFile.print(",");
+    logFile.print(gpsAlt, 2); logFile.print(",");
+    logFile.print(gpsSpeed, 3); logFile.print(",");
+    logFile.println(gpsCourse, 2);
+    logFile.close();
+    logCounter++;
+    
+    if (logCounter % 1000 == 0) {
+      Serial.print("Logged ");
+      Serial.print(logCounter);
+      Serial.println(" samples");
+    }
+    
+    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+  }
+}
+
+void printLiveMonitoring(uint8_t hours, uint8_t minutes, uint8_t seconds, uint16_t millis_val,
+                         float ax, float ay, float az, float gx, float gy, float gz, float temp) {
+  if (liveMode == LIVE_UNITS) {
+    static unsigned long lastLiveOutput = 0;
+    unsigned long currentTime = millis();
+    unsigned long liveInterval = 1000 / LIVE_UNITS_RATE_HZ;
+    
+    if (currentTime - lastLiveOutput >= liveInterval) {
+      lastLiveOutput = currentTime;
+      
+      Serial.print("GPS: ");
+      Serial.print(gps.location.isValid() ? "FIX " : "NOFIX ");
+      Serial.print("("); Serial.print(gps.satellites.value()); Serial.print(" sats) ");
+      Serial.print(hours); Serial.print(":"); Serial.print(minutes); Serial.print(":"); Serial.print(seconds);
+      Serial.print(" | Lat: "); Serial.print(gpsLat, 6);
+      Serial.print(" Lng: "); Serial.print(gpsLng, 6);
+      Serial.print(" Alt: "); Serial.print(gpsAlt, 1); Serial.print(" m ");
+      Serial.print("Speed: "); Serial.print(gpsSpeed, 1); Serial.print(" m/s ");
+      Serial.print("Course: "); Serial.print(gpsCourse, 1); Serial.print(" deg | ");
+      Serial.print("Accel X: "); Serial.print(ax);
+      Serial.print(" Y: "); Serial.print(ay);
+      Serial.print(" Z: "); Serial.print(az);
+      Serial.print(" m/s^2 | ");
+      Serial.print("Gyro X: "); Serial.print(gx);
+      Serial.print(" Y: "); Serial.print(gy);
+      Serial.print(" Z: "); Serial.print(gz);
+      Serial.print(" rad/s | ");
+      Serial.print("Temp: "); Serial.print(temp);
+      Serial.println(" C");
+    }
+  } else if (liveMode == LIVE_CSV) {
+    char timeStr[20];
+    sprintf(timeStr, "%02d:%02d:%02d.%03d", hours, minutes, seconds, millis_val);
+    Serial.print(timeStr); Serial.print(",");
+    Serial.print(ax, 6); Serial.print(",");
+    Serial.print(ay, 6); Serial.print(",");
+    Serial.print(az, 6); Serial.print(",");
+    Serial.print(gx, 6); Serial.print(",");
+    Serial.print(gy, 6); Serial.print(",");
+    Serial.print(gz, 6); Serial.print(",");
+    Serial.print(temp, 6); Serial.print(",");
+    Serial.print(gpsLat, 8); Serial.print(",");
+    Serial.print(gpsLng, 8); Serial.print(",");
+    Serial.print(gpsAlt, 2); Serial.print(",");
+    Serial.print(gpsSpeed, 3); Serial.print(",");
+    Serial.println(gpsCourse, 2);
+  }
+}
+
+void processIMUData(time_t now, uint16_t millis_val, uint8_t hours, uint8_t minutes, uint8_t seconds) {
+  if (!imuFound || !dataReady) return;
+  
+  dataReady = false;
+  
+  if (logging && gpsEnabled && !gpsTimeValid) {
+    static unsigned long lastWaitMsg = 0;
+    if (millis() - lastWaitMsg > 5000) {
+      Serial.println("Waiting for GPS time fix...");
+      lastWaitMsg = millis();
+    }
+    return;
+  }
+  
+  sensors_event_t accel, gyro, temp;
+  imu.getEvent(&accel, &gyro, &temp);
+  
+  logToSD(now, millis_val, hours, minutes, seconds, 
+          accel.acceleration.x, accel.acceleration.y, accel.acceleration.z,
+          gyro.gyro.x, gyro.gyro.y, gyro.gyro.z, temp.temperature);
+  
+  printLiveMonitoring(hours, minutes, seconds, millis_val,
+                      accel.acceleration.x, accel.acceleration.y, accel.acceleration.z,
+                      gyro.gyro.x, gyro.gyro.y, gyro.gyro.z, temp.temperature);
+}
+
 void setup() {
 
   // Initialize LED pin as output
@@ -441,246 +659,13 @@ void setup() {
 }
 
 void loop() {
+  updateGPSData();
   
-  // Update GPS data continuously if GPS is enabled
-  if (gpsEnabled) {
-    while (gpsSerial.available() > 0) {
-      char c = gpsSerial.read();
-      gps.encode(c);
-    }
-    
-    // Store latest GPS data when available
-    if (gps.location.isValid()) {
-      gpsLat = gps.location.lat();
-      gpsLng = gps.location.lng();
-    }
-    if (gps.altitude.isValid()) {
-      gpsAlt = gps.altitude.meters();
-    }
-    if (gps.speed.isValid()) {
-      gpsSpeed = gps.speed.mps();  // Raw doppler speed from GPS
-    }
-    if (gps.course.isValid()) {
-      gpsCourse = gps.course.deg();  // Raw course from GPS
-    }
-    if (gps.time.isValid()) {
-      // Store GPS time locally (no system clock update)
-      gpsHour = gps.time.hour();
-      gpsMinute = gps.time.minute();
-      gpsSecond = gps.time.second();
-      gpsMillisecond = gps.time.centisecond() * 10;
-      
-      if (!gpsTimeValid) {
-        gpsTimeValid = true;
-        lastGpsTimeSync = millis();
-        Serial.println("GPS time acquired");
-      }
-    }
-  }
+  time_t now;
+  uint16_t millis_val;
+  uint8_t hours, minutes, seconds;
+  calculateCurrentTime(now, millis_val, hours, minutes, seconds);
   
-  // Handle serial commands
-  if (Serial.available()) {
-    char cmd = Serial.read();
-    
-    // Clear any remaining newline/carriage return
-    while (Serial.available() && (Serial.peek() == '\n' || Serial.peek() == '\r')) {
-      Serial.read();
-    }
-    
-    switch (cmd) {
-      case '?':
-        showMenu();
-        break;
-      case '1':
-        listFiles();
-        break;
-      case '2':
-        if (logging) {
-          stopLogging();
-        } else {
-          startLogging();
-        }
-        break;
-      case '3':
-        toggleGPS();
-        break;
-      case '4':
-        viewFile();
-        break;
-      case '5':
-        deleteFile();
-        break;
-      case '6':
-        showStatus();
-        break;
-      case '7':
-        downloadFile();
-        break;
-      case '8':
-        toggleLiveMonitoring();
-        break;
-      default:
-        Serial.print("Unknown command: ");
-        Serial.println(cmd);
-        Serial.print("> ");
-        break;
-    }
-  }
-  
-  // Handle IMU data
-  if (imuFound && dataReady) {
-    dataReady = false;
-    
-    // Read sensor data
-    sensors_event_t accel;
-    sensors_event_t gyro;
-    sensors_event_t temp;
-    imu.getEvent(&accel, &gyro, &temp);
-    
-    // Get current time - use GPS time if valid, otherwise use millis() since boot
-    uint8_t hours, minutes, seconds;
-    uint16_t millis_val;
-    
-    if (gpsTimeValid) {
-      hours = gpsHour;
-      minutes = gpsMinute;
-      seconds = gpsSecond;
-      millis_val = gpsMillisecond;
-    } else {
-      // Fallback to uptime if GPS not available
-      unsigned long uptime_ms = millis();
-      unsigned long uptime_s = uptime_ms / 1000;
-      hours = (uptime_s / 3600) % 24;
-      minutes = (uptime_s / 60) % 60;
-      seconds = uptime_s % 60;
-      millis_val = uptime_ms % 1000;
-    }
-    
-    // Log to SD card if logging is active
-    if (logging && sdFound) {
-      logFile = SD.open(currentLogFile, FILE_WRITE);
-      if (logFile) {
-        // Write RTC timestamp
-        char timeStr[20];
-        sprintf(timeStr, "%02d:%02d:%02d.%03d", hours, minutes, seconds, millis_val);
-        logFile.print(timeStr);
-        logFile.print(",");
-        logFile.print(accel.acceleration.x, 6);
-        logFile.print(",");
-        logFile.print(accel.acceleration.y, 6);
-        logFile.print(",");
-        logFile.print(accel.acceleration.z, 6);
-        logFile.print(",");
-        logFile.print(gyro.gyro.x, 6);
-        logFile.print(",");
-        logFile.print(gyro.gyro.y, 6);
-        logFile.print(",");
-        logFile.print(gyro.gyro.z, 6);
-        logFile.print(",");
-        logFile.print(temp.temperature, 6);
-        logFile.print(",");
-        logFile.print(gpsLat, 8);
-        logFile.print(",");
-        logFile.print(gpsLng, 8);
-        logFile.print(",");
-        logFile.print(gpsAlt, 2);
-        logFile.print(",");
-        logFile.print(gpsSpeed, 3);
-        logFile.print(",");
-        logFile.println(gpsCourse, 2);
-        logFile.close();
-        logCounter++;
-        
-        // Print progress every 1000 samples
-        if (logCounter % 1000 == 0) {
-          Serial.print("Logged ");
-          Serial.print(logCounter);
-          Serial.println(" samples");
-        }
-      }
-      
-      // Blink LED when logging
-      digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
-    }
-    
-    // Print to serial only if live monitoring is active
-    if (liveMode == LIVE_UNITS) {
-      static unsigned long lastLiveOutput = 0;
-      unsigned long currentTime = millis();
-      unsigned long liveInterval = 1000 / LIVE_UNITS_RATE_HZ;  // milliseconds between outputs
-      
-      if (currentTime - lastLiveOutput >= liveInterval) {
-        lastLiveOutput = currentTime;
-        
-        Serial.print("GPS: ");
-        if (gps.location.isValid()) {
-          Serial.print("FIX ");
-        } else {
-          Serial.print("NOFIX ");
-        }
-        Serial.print("(");
-        Serial.print(gps.satellites.value());
-        Serial.print(" sats) ");
-        Serial.print(hours);
-        Serial.print(":");
-        Serial.print(minutes);
-        Serial.print(":");
-        Serial.print(seconds);
-        Serial.print(" | Lat: ");
-        Serial.print(gpsLat, 6);
-        Serial.print(" Lng: ");
-        Serial.print(gpsLng, 6);
-        Serial.print(" Alt: ");
-        Serial.print(gpsAlt, 1);
-        Serial.print(" m ");
-        Serial.print("Speed: ");
-        Serial.print(gpsSpeed, 1);
-        Serial.print(" m/s ");
-        Serial.print("Course: ");
-        Serial.print(gpsCourse, 1);
-        Serial.print(" deg | ");
-
-        Serial.print("Accel X: "); Serial.print(accel.acceleration.x);
-        Serial.print(" Y: "); Serial.print(accel.acceleration.y);
-        Serial.print(" Z: "); Serial.print(accel.acceleration.z);
-        Serial.print(" m/s^2 | ");
-
-        Serial.print("Gyro X: "); Serial.print(gyro.gyro.x);
-        Serial.print(" Y: "); Serial.print(gyro.gyro.y);
-        Serial.print(" Z: "); Serial.print(gyro.gyro.z);
-        Serial.print(" rad/s | ");
-
-        Serial.print("Temp: "); Serial.print(temp.temperature);
-        Serial.println(" C");
-      }
-    } else if (liveMode == LIVE_CSV) {
-      char timeStr[20];
-      sprintf(timeStr, "%02d:%02d:%02d.%03d", hours, minutes, seconds, millis_val);
-      Serial.print(timeStr);
-      Serial.print(",");
-      Serial.print(accel.acceleration.x, 6);
-      Serial.print(",");
-      Serial.print(accel.acceleration.y, 6);
-      Serial.print(",");
-      Serial.print(accel.acceleration.z, 6);
-      Serial.print(",");
-      Serial.print(gyro.gyro.x, 6);
-      Serial.print(",");
-      Serial.print(gyro.gyro.y, 6);
-      Serial.print(",");
-      Serial.print(gyro.gyro.z, 6);
-      Serial.print(",");
-      Serial.print(temp.temperature, 6);
-      Serial.print(",");
-      Serial.print(gpsLat, 8);
-      Serial.print(",");
-      Serial.print(gpsLng, 8);
-      Serial.print(",");
-      Serial.print(gpsAlt, 2);
-      Serial.print(",");
-      Serial.print(gpsSpeed, 3);
-      Serial.print(",");
-      Serial.println(gpsCourse, 2);
-    }
-  }
+  handleSerialCommands();
+  processIMUData(now, millis_val, hours, minutes, seconds);
 }
