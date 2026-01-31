@@ -205,7 +205,7 @@ class IMULiveReader:
     
     def visualize_live(self, update_interval=100):
         """
-        Create live 3D vector visualization of IMU data using Dash
+        Create live 2D time-series visualization of IMU data using Dash
         
         Parameters:
         update_interval (int): Update interval in milliseconds
@@ -219,7 +219,7 @@ class IMULiveReader:
         app = Dash(__name__)
         
         app.layout = html.Div([
-            html.H1("IMU 3D Vektorer - Live", style={'textAlign': 'center'}),
+            html.H1("IMU 2D Time Series - Live", style={'textAlign': 'center'}),
             html.Div([
                 html.Button('⏸ Pause', id='pause-button', n_clicks=0, style={
                     'fontSize': '18px',
@@ -237,32 +237,38 @@ class IMULiveReader:
                         id='sensor-checklist',
                         options=[
                             {'label': ' Akselerometer', 'value': 'accel'},
-                            {'label': ' Gyroskop', 'value': 'gyro'}
+                            {'label': ' Gyroskop', 'value': 'gyro'},
+                            {'label': ' Temperatur', 'value': 'temp'}
                         ],
-                        value=['accel', 'gyro'],
+                        value=['accel', 'gyro', 'temp'],
                         inline=True,
                         style={'display': 'inline-block'}
                     )
                 ], style={'display': 'inline-block', 'marginLeft': '20px'})
             ], style={'textAlign': 'center'}),
-            html.Div([
-                html.Div([
-                    html.H3("Lokal (IMU-referanse)", style={'textAlign': 'center'}),
-                    dcc.Graph(id='local-graph', style={'height': '70vh'})
-                ], style={'width': '50%', 'display': 'inline-block'}),
-                html.Div([
-                    html.H3("Global (Jord-referanse)", style={'textAlign': 'center'}),
-                    dcc.Graph(id='global-graph', style={'height': '70vh'})
-                ], style={'width': '50%', 'display': 'inline-block'})
-            ]),
             html.Div(id='info-text', style={
-                'marginTop': '20px',
+                'marginTop': '10px',
+                'marginBottom': '10px',
                 'fontFamily': 'monospace',
                 'fontSize': '14px',
                 'display': 'flex',
                 'flexWrap': 'wrap',
                 'justifyContent': 'space-around'
             }),
+            html.Div([
+                html.Div([
+                    html.H3("Akselerometer (mg)", style={'textAlign': 'center'}),
+                    dcc.Graph(id='accel-graph', style={'height': '24vh'})
+                ], id='accel-container'),
+                html.Div([
+                    html.H3("Gyroskop (°/s)", style={'textAlign': 'center'}),
+                    dcc.Graph(id='gyro-graph', style={'height': '24vh'})
+                ], id='gyro-container'),
+                html.Div([
+                    html.H3("Temperatur (°C)", style={'textAlign': 'center'}),
+                    dcc.Graph(id='temp-graph', style={'height': '20vh'})
+                ], id='temp-container')
+            ]),
             dcc.Interval(
                 id='interval-component',
                 interval=500,  # 500ms = 2 updates per second
@@ -283,8 +289,12 @@ class IMULiveReader:
             return ''
         
         @app.callback(
-            [Output('local-graph', 'figure'),
-             Output('global-graph', 'figure'),
+            [Output('accel-graph', 'figure'),
+             Output('gyro-graph', 'figure'),
+             Output('temp-graph', 'figure'),
+             Output('accel-container', 'style'),
+             Output('gyro-container', 'style'),
+             Output('temp-container', 'style'),
              Output('info-text', 'children')],
             Input('interval-component', 'n_intervals'),
             [State('paused-state', 'data'),
@@ -299,130 +309,68 @@ class IMULiveReader:
             if len(self.ax_buffer) == 0:
                 # Return empty figures if no data yet
                 empty_fig = go.Figure()
-                empty_fig.update_layout(
-                    scene=dict(
-                        xaxis=dict(title='X', range=[-a_axis_range, a_axis_range]),
-                        yaxis=dict(title='Y', range=[-a_axis_range, a_axis_range]),
-                        zaxis=dict(title='Z', range=[-a_axis_range, a_axis_range]),
-                        aspectmode='cube'
-                    ),
-                    title="Venter på data..."
+                empty_fig.update_layout(title="Venter på data...")
+                accel_style = {'display': 'none'} if 'accel' not in selected_sensors else {}
+                gyro_style = {'display': 'none'} if 'gyro' not in selected_sensors else {}
+                temp_style = {'display': 'none'} if 'temp' not in selected_sensors else {}
+                return empty_fig, empty_fig, empty_fig, accel_style, gyro_style, temp_style, "Ingen data ennå..."
+            
+            time_vals = list(self.time_buffer)
+            accel_fig = go.Figure()
+            gyro_fig = go.Figure()
+            temp_fig = go.Figure()
+            accel_style = {'display': 'none'} if 'accel' not in selected_sensors else {}
+            gyro_style = {'display': 'none'} if 'gyro' not in selected_sensors else {}
+            temp_style = {'display': 'none'} if 'temp' not in selected_sensors else {}
+
+            if 'accel' in selected_sensors:
+                accel_fig.add_trace(go.Scatter(
+                    x=time_vals, y=[v * a_scale for v in self.ax_buffer],
+                    mode='lines', name='aX (mg)'
+                ))
+                accel_fig.add_trace(go.Scatter(
+                    x=time_vals, y=[v * a_scale for v in self.ay_buffer],
+                    mode='lines', name='aY (mg)'
+                ))
+                accel_fig.add_trace(go.Scatter(
+                    x=time_vals, y=[v * a_scale for v in self.az_buffer],
+                    mode='lines', name='aZ (mg)'
+                ))
+            accel_fig.update_layout(
+                yaxis=dict(title='mg', range=[-a_axis_range, a_axis_range]),
+                margin=dict(l=40, r=10, t=20, b=30),
+                legend=dict(orientation='h')
+            )
+
+            if 'gyro' in selected_sensors:
+                gyro_fig.add_trace(go.Scatter(
+                    x=time_vals, y=list(self.gx_buffer),
+                    mode='lines', name='gX (°/s)'
+                ))
+                gyro_fig.add_trace(go.Scatter(
+                    x=time_vals, y=list(self.gy_buffer),
+                    mode='lines', name='gY (°/s)'
+                ))
+                gyro_fig.add_trace(go.Scatter(
+                    x=time_vals, y=list(self.gz_buffer),
+                    mode='lines', name='gZ (°/s)'
+                ))
+            gyro_fig.update_layout(
+                yaxis=dict(title='°/s'),
+                margin=dict(l=40, r=10, t=20, b=30),
+                legend=dict(orientation='h')
+            )
+
+            if 'temp' in selected_sensors:
+                temp_fig.add_trace(go.Scatter(
+                    x=time_vals, y=list(self.temp_buffer),
+                    mode='lines', name='Temp (°C)'
+                ))
+                temp_fig.update_layout(
+                    yaxis=dict(title='°C'),
+                    margin=dict(l=40, r=10, t=20, b=30),
+                    showlegend=False
                 )
-                return empty_fig, empty_fig, "Ingen data ennå..."
-            
-            # Get latest LOCAL data
-            ax_val = self.ax_buffer[-1] * a_scale
-            ay_val = self.ay_buffer[-1] * a_scale
-            az_val = self.az_buffer[-1] * a_scale
-            
-            gx_val = self.gx_buffer[-1] * g_scale
-            gy_val = self.gy_buffer[-1] * g_scale
-            gz_val = self.gz_buffer[-1] * g_scale
-            
-            # Create LOCAL figure
-            fig_local = go.Figure()
-            
-            # Add accelerometer vector (blue) - LOCAL
-            if 'accel' in selected_sensors:
-                fig_local.add_trace(go.Scatter3d(
-                    x=[0, ax_val], y=[0, ay_val], z=[0, az_val],
-                    mode='lines+markers',
-                    line=dict(color='blue', width=8),
-                    marker=dict(size=[0, 10], color='blue'),
-                    name='Akselerometer',
-                    hovertemplate=f'aX: {self.ax_buffer[-1] * 1000:.1f} mg<br>aY: {self.ay_buffer[-1] * 1000:.1f} mg<br>aZ: {self.az_buffer[-1] * 1000:.1f} mg'
-                ))
-                
-                # Add cone for accelerometer
-                fig_local.add_trace(go.Cone(
-                    x=[ax_val], y=[ay_val], z=[az_val],
-                    u=[ax_val*0.3], v=[ay_val*0.3], w=[az_val*0.3],
-                    colorscale='Blues',
-                    showscale=False,
-                    sizemode='absolute',
-                    sizeref=0.3,
-                    showlegend=False
-                ))
-            
-            # Add gyroscope vector (red) - LOCAL
-            if 'gyro' in selected_sensors:
-                fig_local.add_trace(go.Scatter3d(
-                    x=[0, gx_val], y=[0, gy_val], z=[0, gz_val],
-                    mode='lines+markers',
-                    line=dict(color='red', width=8),
-                    marker=dict(size=[0, 10], color='red'),
-                    name='Gyroskop',
-                    hovertemplate=f'gX: {self.gx_buffer[-1]:.2f} °/s<br>gY: {self.gy_buffer[-1]:.2f} °/s<br>gZ: {self.gz_buffer[-1]:.2f} °/s'
-                ))
-                
-                # Add cone for gyroscope
-                fig_local.add_trace(go.Cone(
-                    x=[gx_val], y=[gy_val], z=[gz_val],
-                    u=[gx_val*0.3], v=[gy_val*0.3], w=[gz_val*0.3],
-                    colorscale='Reds',
-                    showscale=False,
-                    sizemode='absolute',
-                    sizeref=0.3,
-                    showlegend=False
-                ))
-            
-            # Add magnetometer vector (green) - LOCAL
-            if 'mag' in selected_sensors:
-                # No magnetometer in new format
-                pass
-            
-            # Update LOCAL layout
-            error_rate = (self.error_count / (self.data_count + self.error_count) * 100) if (self.data_count + self.error_count) > 0 else 0
-            
-            fig_local.update_layout(
-                scene=dict(
-                    xaxis=dict(title='X', range=[-a_axis_range, a_axis_range]),
-                    yaxis=dict(title='Y', range=[-a_axis_range, a_axis_range]),
-                    zaxis=dict(title='Z', range=[-a_axis_range, a_axis_range]),
-                    aspectmode='cube'
-                ),
-                showlegend=True,
-                title=f"Lokal (IMU-koordinater)",
-                margin=dict(l=0, r=0, t=40, b=0)
-            )
-            
-            # Create GLOBAL figure (same as local for simplicity)
-            fig_global = go.Figure()
-            
-            # Add accelerometer vector (blue)
-            if 'accel' in selected_sensors:
-                fig_global.add_trace(go.Scatter3d(
-                    x=[0, ax_val], y=[0, ay_val], z=[0, az_val],
-                    mode='lines+markers',
-                    line=dict(color='blue', width=8),
-                    marker=dict(size=[0, 10], color='blue'),
-                    name='Akselerometer',
-                    hovertemplate=f'aX: {self.ax_buffer[-1] * 1000:.1f} mg<br>aY: {self.ay_buffer[-1] * 1000:.1f} mg<br>aZ: {self.az_buffer[-1] * 1000:.1f} mg'
-                ))
-            
-            # Add gyroscope vector (red)
-            if 'gyro' in selected_sensors:
-                fig_global.add_trace(go.Scatter3d(
-                    x=[0, gx_val], y=[0, gy_val], z=[0, gz_val],
-                    mode='lines+markers',
-                    line=dict(color='red', width=8),
-                    marker=dict(size=[0, 10], color='red'),
-                    name='Gyroskop',
-                    hovertemplate=f'gX: {self.gx_buffer[-1]:.2f} °/s<br>gY: {self.gy_buffer[-1]:.2f} °/s<br>gZ: {self.gz_buffer[-1]:.2f} °/s'
-                ))
-            
-            # Update GLOBAL layout
-            fig_global.update_layout(
-                scene=dict(
-                    xaxis=dict(title='X', range=[-a_axis_range, a_axis_range]),
-                    yaxis=dict(title='Y', range=[-a_axis_range, a_axis_range]),
-                    zaxis=dict(title='Z', range=[-a_axis_range, a_axis_range]),
-                    aspectmode='cube'
-                ),
-                showlegend=True,
-                title="Globale Koordinater",
-                margin=dict(l=0, r=0, t=40, b=0)
-            )
             
             # Info text - horizontal layout
             info_text = html.Div([
@@ -478,7 +426,7 @@ class IMULiveReader:
                   f"GPS:[{self.gps_lat_buffer[-1]:.4f}, {self.gps_lng_buffer[-1]:.4f}]",
                   end='', flush=True)
             
-            return fig_local, fig_global, info_text
+            return accel_fig, gyro_fig, temp_fig, accel_style, gyro_style, temp_style, info_text
         
         @app.callback(
             [Output('paused-state', 'data'),
